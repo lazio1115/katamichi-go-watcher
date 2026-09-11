@@ -1,0 +1,26 @@
+target_url: "https://cp.toyota.jp/rentacar/"
+
+# サイトが「受付終了」オーバーレイを付けた車両を通知・一覧から除外する。
+# false にすると受付終了分も対象になる（掲載の約7割が受付終了なので通常は true）。
+skip_closed: true
+
+# 全区間対象。空リスト = フィルタなし
+filters:
+  depart_prefectures: []      # 例: ["東京都", "神奈川県"]
+  return_companies: []        # 例: ["トヨタレンタリース静岡"]
+  car_models: []              # 例: ["アルファード", "ハイエースバン"]
+  period_from: null           # 例: "2026-09-01"
+  period_to: null
+
+notify:
+  type: "discord"             # discord | ntfy
+  webhook_url_env: "DISCORD_WEBHOOK_URL"   # 実値は環境変数から読む
+  ntfy_topic: null            # type: ntfy のときに指定
+  notify_removed: false
+  max_messages_per_run: 3
+
+http:
+  user_agent: "katamichi-go-watcher/1.0 (personal use)"
+  timeout_sec: 20
+  retries: 3
+  retry_backoff_sec: 5

@@ -1,0 +1,148 @@
+# 片道GO! 空車監視ツール
+
+トヨタレンタカー「片道GO!」（https://cp.toyota.jp/rentacar/ ）の掲載車両を定期取得し、
+**新しく掲載された車両だけ**を Discord / ntfy に通知します。
+電話で確認して満車だった車両は手動で `mute` して一覧・通知から消せます。
+
+個人利用専用。取得データの再配布・公開はしません。
+
+---
+
+## サイトの実構造（実装の前提）
+
+実 HTML を解析して確認した事実です。挙動が変わったらここを読み直してください。
+
+| 項目 | 実際の構造 |
+|---|---|
+| レンダリング | サーバーサイド。JavaScript 実行は不要 |
+| 1件の単位 | `li.service-item` |
+| 重複 | `ul#service-items-shop-type-start` と `ul#service-items-shop-type-return` の**2リストに同じ車両が1回ずつ**出力される。合計 `li` 数はちょうど掲載件数の2倍 |
+| エリアタブ | `li` の `data-start-area` / `data-return-area` 属性を JS が show/hide するだけ。HTML 上は重複しない |
+| **受付終了** | `div.service-item__body` に **`show-entry-end`** クラスが付く。CSS の `::before { content:'受付終了' }` でグレーのオーバーレイを描画する |
+
+**重要:** 「受付終了」という文字列は **CSS にしか存在せず HTML 本文には出てきません**。
+ページをテキスト／Markdown に変換して読むと受付終了かどうかが完全に失われます。
+必ず class 属性を見てください。
+
+取得サンプル（2026-09-11 時点）は 276 `li` = **138件**、うち**受付終了 105件 / 掲載中 33件**でした。
+掲載の約 7 割が受付終了なので、`config.yaml` の `skip_closed: true`（既定）で除外しています。
+
+### 主なフィールドの取り出し元
+
+| フィールド | セレクタ | 例 |
+|---|---|---|
+| 出発店舗 | `.service-item__shop-start` | `トヨタレンタリース山形 山形駅前店` |
+| 出発地 | 同上の `<small>` | `（山形県 山形市）` |
+| 返却 | `.service-item__shop-return` | `トヨタレンタリース福島 返却可能店舗` |
+| 出発期間 | `.service-item__date` | `2026年9月7日 ～ 9月9日` |
+| 車種・車両番号 | `.service-item__info__car-type` | `ヤリス　車両番号3878` |
+| 車両条件 | `.service-item__info__condition` | `AT・禁煙車・５人乗り・ナビ・ＥＴＣ付き` |
+| 予約先 / 電話 | `.service-item__reserve-shop` / `.service-item__reserve-tel` | `山形駅前店` / `023-625-0100` |
+
+表記ゆれの実態:
+
+- 車両番号は3系統 — ラベル形式（`車両番号3878`, `車輛番号 3628`）、実ナンバー（`青森501わ3843`）、番号なし（`乗用車（…店舗返却）`）
+- **出発期間の終了日には年が入らない**（`2026年9月7日 ～ 9月9日`）。開始日から年を補い、年をまたぐ場合は +1 年する
+- 全角英数・全角スペース・半角カナが混在。`unicodedata.normalize("NFKC", s)` の**1回**で全角英数→半角と半角カナ→全角カナの両方が処理される
+
+---
+
+## セットアップ（GitHub Actions・推奨）
+
+1. このリポジトリを fork（または新規リポジトリとして push）する
+2. Discord でサーバー設定 → 連携サービス → ウェブフック → 新しいウェブフック → URL をコピー
+3. リポジトリの Settings → Secrets and variables → Actions → New repository secret
+   - Name: `DISCORD_WEBHOOK_URL`
+   - Secret: 2 でコピーした URL
+4. Actions タブ → `katamichi-go-watcher` → Run workflow で手動実行
+   - 初回は「初期化完了：N件を登録しました」だけが届きます（既存掲載の一斉通知はしません）
+5. 以降は cron で自動実行され、**新規掲載のみ**通知されます
+
+ntfy を使う場合は `config.yaml` を `notify.type: "ntfy"` にして `ntfy_topic` に
+推測されにくい任意の文字列を設定し、スマホの ntfy アプリで同じトピックを購読してください。
+
+### GitHub Actions の制約（重要）
+
+- cron は数分〜十数分遅延します。正確な10分間隔にはなりません
+- **リポジトリが60日間非アクティブだとスケジュールが自動停止します。**
+  月1回は手動実行かコミットをしてください
+- **実行分数**: 上記 cron は1日約93回（10分間隔×14時間=84回 + 毎時9回）動きます。
+  1回30〜60秒として月1,500〜2,800分に達するため、
+  **private リポジトリだと無料枠2,000分/月を超える可能性があります**。
+  - **public リポジトリ推奨**（標準ランナーは無制限）
+  - private で使うなら `*/10` を `*/20`〜`*/30` に緩めてください
+- `state.json` をコミットして永続化するため、同時実行すると push が競合します。
+  `concurrency: group: watch` で直列化済みです
+
+### 代替の実行環境
+
+| 方法 | 特徴 |
+|---|---|
+| Cloudflare Workers + KV | Cron Trigger が正確。無料枠内。state を KV に保存 |
+| VPS / Raspberry Pi | 完全に自由。常時稼働の管理が必要 |
+| 自宅 PC + タスクスケジューラ / launchd | 手軽だがスリープすると止まる |
+
+**iPhone 単体を実行基盤にはできません。** iOS はバックグラウンドで常駐プロセスを動かせないためです。
+iPhone は「通知を受け取る側」として Discord か ntfy のアプリを入れておけば、
+上記どの実行環境からでもプッシュ通知が届きます。
+
+---
+
+## ローカルで動かす
+
+必要なもの: Python 3.12 以降、Git。
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements-dev.txt
+
+$env:DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/..."
+python -m watcher run --dry-run   # 通知を送らず結果だけ表示
+python -m pytest                  # テスト
+```
+
+## コマンド
+
+```
+python -m watcher run [--dry-run]   # 取得 → 差分検知 → 通知
+python -m watcher list              # 現在の掲載一覧を番号付きで表示
+python -m watcher mute <番号|key>    # 満車として非表示にする
+python -m watcher unmute <key>      # 解除
+python -m watcher muted             # 非表示一覧
+```
+
+`mute` の番号は直前の `list` の表示順（出発期間 → 出発会社 → 店舗）に対応します。
+key は先頭8桁の前方一致でも指定できます。
+サイトから消えた車両の mute エントリは次回実行時に自動削除されます。
+
+---
+
+## 壊れないための仕組み
+
+- HTTP は最大3回リトライ（指数バックオフ）。全失敗ならエラー通知して異常終了
+- **取得0件のときは state.json を上書きしません。** エラー通知を出して state を維持します
+  （HTML 構造変更で全件消失 → 次回に全件を新規として誤通知する事故を防ぐため）
+- 前回比で件数が80%以上減ったら警告通知を出します
+- パースできなかった行はスキップして件数をログに残し、全体は落としません
+- 取得した生 HTML は直近3回分を `snapshots/` に保存します（`.gitignore` 済み）
+- 同一 key の通知は生涯1回だけ（`state.json` の `notified` フラグ）
+- 1回の実行の通知は最大3通。超えるときは「新規 N 件（多数）」に要約します
+
+---
+
+## マナー・法務
+
+- アクセス間隔は最短10分。秒単位・分単位の連打はしません
+- `User-Agent` に用途がわかる文字列（`katamichi-go-watcher/1.0 (personal use)`）を設定しています
+- `https://cp.toyota.jp/robots.txt` は **2026-09-11 時点で 404（robots.txt なし）** でした。
+  将来設置される可能性があるので、運用前に再確認してください
+- 利用前にトヨタレンタカー「サイト利用にあたって」
+  （https://rent.toyota.co.jp/terms_of_use/ ）を各自で確認してください
+- 取得データの再配布・公開はしません（個人利用限定）
+
+## 免責
+
+本ツールは個人が趣味で作成したものであり、トヨタ自動車株式会社およびトヨタレンタカーとは
+一切関係がありません。掲載情報の正確性・即時性は保証しません。
+予約可否は必ず各店舗へ電話で確認してください。

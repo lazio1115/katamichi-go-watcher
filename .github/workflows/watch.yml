@@ -1,0 +1,40 @@
+name: katamichi-go-watcher
+
+on:
+  schedule:
+    # UTC 指定。JST 07:00-21:59 を10分間隔
+    - cron: "*/10 22-23,0-12 * * *"
+    # JST 22:00-06:00 は1時間間隔
+    - cron: "0 13-21 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# state.json を push で永続化するため、実行は必ず直列化する
+concurrency:
+  group: watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m watcher run
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      - name: Commit state
+        run: |
+          git config user.name  "github-actions"
+          git config user.email "actions@github.com"
+          git add state.json muted.json
+          git diff --staged --quiet && exit 0
+          git commit -m "chore: update state [skip ci]"
+          git pull --rebase --autostash
+          git push
