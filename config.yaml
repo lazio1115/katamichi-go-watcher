@@ -4,6 +4,11 @@ target_url: "https://cp.toyota.jp/rentacar/"
 # false にすると受付終了分も対象になる（掲載の約7割が受付終了なので通常は true）。
 skip_closed: true
 
+# 前回実行からこの時間以上あいていたら「再開」とみなし、
+# たまっていた掲載を一斉通知せず、いま予約できる車両のダイジェストを1通だけ送る。
+# GitHub でワークフローを OFF→ON したときの通知爆発を防ぐための設定。
+reinit_after_hours: 24
+
 # 全区間対象。空リスト = フィルタなし
 filters:
   depart_prefectures: []      # 例: ["東京都", "神奈川県"]

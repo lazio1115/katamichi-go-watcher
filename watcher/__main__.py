@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from datetime import datetime, timezone
 
 from . import config as config_mod
 from . import store
@@ -121,6 +122,8 @@ def cmd_run(cfg: dict, dry_run: bool) -> int:
 
     result = compute(previous, listings)
     first_run = not previous
+    gap = hours_since_last_run(previous)
+    resumed = not first_run and gap is not None and gap >= cfg["reinit_after_hours"]
 
     # A listing that vanished from the site no longer needs a mute entry.
     removed_keys = {l.key for l in result.removed}
@@ -134,8 +137,10 @@ def cmd_run(cfg: dict, dry_run: bool) -> int:
         l for l in _visible(cfg, result.new, muted) if not l.notified
     ]
 
-    if first_run:
-        notifier.send("初期化完了", f"{len(listings)} 件を登録しました。以降は新規掲載のみ通知します。")
+    if first_run or resumed:
+        # Every ON after an OFF is effectively a fresh start: send one digest of
+        # what is bookable right now instead of replaying the whole backlog.
+        _send_digest(notifier, cfg, _visible(cfg, listings, muted), len(listings), resumed)
         for listing in result.merged.values():
             listing.notified = True
     elif notify_targets:
@@ -143,7 +148,7 @@ def cmd_run(cfg: dict, dry_run: bool) -> int:
         for listing in notify_targets:
             listing.notified = True
 
-    if notify_cfg.get("notify_removed") and result.removed and not first_run:
+    if notify_cfg.get("notify_removed") and result.removed and not (first_run or resumed):
         body = "\n".join(_one_line(l) for l in result.removed[:20])
         notifier.send(f"掲載終了 {len(result.removed)} 件", body)
 
@@ -157,6 +162,34 @@ def cmd_run(cfg: dict, dry_run: bool) -> int:
     if not dry_run:
         store.save_state(result.merged)
     return 0
+
+
+DIGEST_SIZE = 10
+
+
+def hours_since_last_run(previous: dict[str, Listing]) -> float | None:
+    """Hours since the newest last_seen in the stored state, or None if unknown."""
+    stamps = [l.last_seen for l in previous.values() if l.last_seen]
+    if not stamps:
+        return None
+    try:
+        last = datetime.fromisoformat(max(stamps))
+    except ValueError:
+        return None
+    return (datetime.now(timezone.utc) - last).total_seconds() / 3600
+
+
+def _send_digest(notifier, cfg: dict, visible: list[Listing], total: int, resumed: bool) -> None:
+    title = "監視を再開しました" if resumed else "監視を開始しました"
+    header = f"{title}（掲載中 {len(visible)} 件 / 全 {total} 件）"
+    if not visible:
+        notifier.send(header, f"いま予約できる車両はありません。\n{cfg['target_url']}")
+        return
+
+    visible = sorted(visible, key=lambda l: (l.period_start, l.depart_company, l.depart_shop))
+    body = "\n\n".join(_format(l) for l in visible[:DIGEST_SIZE])
+    more = f"\n\n他 {len(visible) - DIGEST_SIZE} 件" if len(visible) > DIGEST_SIZE else ""
+    notifier.send(header, f"{body}{more}\n\n{cfg['target_url']}")
 
 
 def _send_new(notifier, notify_cfg: dict, url: str, new: list[Listing]) -> None:

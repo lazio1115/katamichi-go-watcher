@@ -12,6 +12,7 @@ CONFIG_PATH = ROOT / "config.yaml"
 DEFAULTS: dict = {
     "target_url": "https://cp.toyota.jp/rentacar/",
     "skip_closed": True,
+    "reinit_after_hours": 24,
     "filters": {
         "depart_prefectures": [],
         "return_companies": [],
