@@ -164,9 +164,6 @@ def cmd_run(cfg: dict, dry_run: bool) -> int:
     return 0
 
 
-DIGEST_SIZE = 10
-
-
 def hours_since_last_run(previous: dict[str, Listing]) -> float | None:
     """Hours since the newest last_seen in the stored state, or None if unknown."""
     stamps = [l.last_seen for l in previous.values() if l.last_seen]
@@ -187,9 +184,8 @@ def _send_digest(notifier, cfg: dict, visible: list[Listing], total: int, resume
         return
 
     visible = sorted(visible, key=lambda l: (l.period_start, l.depart_company, l.depart_shop))
-    body = "\n\n".join(_format(l) for l in visible[:DIGEST_SIZE])
-    more = f"\n\n他 {len(visible) - DIGEST_SIZE} 件" if len(visible) > DIGEST_SIZE else ""
-    notifier.send(header, f"{body}{more}\n\n{cfg['target_url']}")
+    body = "\n\n".join(_format(l) for l in visible)
+    notifier.send(header, f"{body}\n\n{cfg['target_url']}")
 
 
 def _send_new(notifier, notify_cfg: dict, url: str, new: list[Listing]) -> None:
