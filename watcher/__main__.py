@@ -25,6 +25,11 @@ def main(argv: list[str] | None = None) -> int:
 
     p_run = sub.add_parser("run", help="scrape, diff and notify")
     p_run.add_argument("--dry-run", action="store_true", help="print instead of notifying")
+    p_run.add_argument(
+        "--full-list",
+        action="store_true",
+        help="send every bookable listing, not just the new ones",
+    )
 
     sub.add_parser("list", help="show the current listings with index numbers")
     p_mute = sub.add_parser("mute", help="hide a listing (e.g. it is fully booked)")
@@ -39,7 +44,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg = config_mod.load()
 
     if args.command == "run":
-        return cmd_run(cfg, dry_run=args.dry_run)
+        return cmd_run(cfg, dry_run=args.dry_run, full_list=args.full_list)
     if args.command == "list":
         return cmd_list(cfg)
     if args.command == "mute":
@@ -88,7 +93,7 @@ def _passes_filters(f: dict, l: Listing) -> bool:
     return True
 
 
-def cmd_run(cfg: dict, dry_run: bool) -> int:
+def cmd_run(cfg: dict, dry_run: bool, full_list: bool = False) -> int:
     notify_cfg = cfg["notify"]
     notifier = ConsoleNotifier() if dry_run else build(notify_cfg)
 
@@ -137,18 +142,27 @@ def cmd_run(cfg: dict, dry_run: bool) -> int:
         l for l in _visible(cfg, result.new, muted) if not l.notified
     ]
 
-    if first_run or resumed:
+    if first_run or resumed or full_list:
         # Every ON after an OFF is effectively a fresh start: send one digest of
         # what is bookable right now instead of replaying the whole backlog.
-        _send_digest(notifier, cfg, _visible(cfg, listings, muted), len(listings), resumed)
-        for listing in result.merged.values():
+        if first_run:
+            title = "監視を開始しました"
+        elif resumed:
+            title = "監視を再開しました"
+        else:
+            title = "いま予約できる車両"
+        _send_digest(notifier, cfg, _visible(cfg, listings, muted), len(listings), title)
+        # An on-demand full list is not a new baseline, so it only marks the
+        # listings it actually showed.
+        marked = result.merged.values() if (first_run or resumed) else notify_targets
+        for listing in marked:
             listing.notified = True
     elif notify_targets:
         _send_new(notifier, notify_cfg, cfg["target_url"], notify_targets)
         for listing in notify_targets:
             listing.notified = True
 
-    if notify_cfg.get("notify_removed") and result.removed and not (first_run or resumed):
+    if notify_cfg.get("notify_removed") and result.removed and not (first_run or resumed or full_list):
         body = "\n".join(_one_line(l) for l in result.removed[:20])
         notifier.send(f"掲載終了 {len(result.removed)} 件", body)
 
@@ -176,8 +190,7 @@ def hours_since_last_run(previous: dict[str, Listing]) -> float | None:
     return (datetime.now(timezone.utc) - last).total_seconds() / 3600
 
 
-def _send_digest(notifier, cfg: dict, visible: list[Listing], total: int, resumed: bool) -> None:
-    title = "監視を再開しました" if resumed else "監視を開始しました"
+def _send_digest(notifier, cfg: dict, visible: list[Listing], total: int, title: str) -> None:
     header = f"{title}（掲載中 {len(visible)} 件 / 全 {total} 件）"
     if not visible:
         notifier.send(header, f"いま予約できる車両はありません。\n{cfg['target_url']}")
