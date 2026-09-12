@@ -116,6 +116,47 @@ def test_full_list_marks_new_bookable_listings_it_showed(monkeypatch, harness):
     assert saved["b"].notified is True
 
 
+def test_total_key_churn_is_refused_without_notifying(monkeypatch, harness):
+    """A degraded page keeps the count but changes every key — never notify on that."""
+    notifier, saved = harness
+    known = {
+        f"old{i}": _listing(f"old{i}", last_seen="2026-09-13T06:00:00+09:00", notified=True)
+        for i in range(20)
+    }
+    _stub_scrape(monkeypatch, [_listing(f"new{i}") for i in range(20)])
+    monkeypatch.setattr(m.store, "load_state", lambda: known)
+
+    assert m.cmd_run(_cfg(), dry_run=False) == 1
+    assert notifier.titles == ["⚠️ 構造変化の疑い"]
+    assert saved == {}, "state must be kept as-is"
+
+
+def test_normal_turnover_is_not_mistaken_for_churn(monkeypatch, harness):
+    notifier, saved = harness
+    known = {
+        f"k{i}": _listing(f"k{i}", last_seen="2026-09-13T06:00:00+09:00", notified=True)
+        for i in range(20)
+    }
+    # 16 of 20 survive, 4 drop off, 3 genuinely new — a busy but ordinary run.
+    current = [_listing(f"k{i}") for i in range(16)] + [_listing(f"n{i}") for i in range(3)]
+    _stub_scrape(monkeypatch, current)
+    monkeypatch.setattr(m.store, "load_state", lambda: known)
+
+    assert m.cmd_run(_cfg(), dry_run=False) == 0
+    assert notifier.titles == ["🚗 新規 3 件"]
+
+
+def test_churn_guard_ignores_tiny_samples(monkeypatch, harness):
+    """With only a handful of listings a full turnover is plausible."""
+    notifier, _ = harness
+    known = {"a": _listing("a", last_seen="2026-09-13T06:00:00+09:00", notified=True)}
+    _stub_scrape(monkeypatch, [_listing("b")])
+    monkeypatch.setattr(m.store, "load_state", lambda: known)
+
+    assert m.cmd_run(_cfg(), dry_run=False) == 0
+    assert notifier.titles == ["🚗 新規 1 件"]
+
+
 def test_cli_passes_the_flag_through(monkeypatch):
     seen = {}
     monkeypatch.setattr(m, "cmd_run", lambda cfg, dry_run, full_list: seen.update(

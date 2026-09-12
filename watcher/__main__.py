@@ -17,6 +17,12 @@ log = logging.getLogger("watcher")
 
 # Guard against a silent site/HTML change wiping the whole state.
 COLLAPSE_RATIO = 0.8
+# A degraded page can return the usual number of listings with every field
+# subtly different (observed 2026-09-13: 出発店舗 came back as "福島空港" instead
+# of "トヨタレンタリース新福島 福島空港店"), which changes every key at once and
+# would otherwise look like a complete turnover.
+CHURN_SURVIVAL_MIN = 0.3
+CHURN_MIN_SAMPLE = 10
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -117,6 +123,18 @@ def cmd_run(cfg: dict, dry_run: bool, full_list: bool = False) -> int:
         msg = "取得件数が0件でした。HTML構造の変更かサイト障害の可能性があります。state は維持します。"
         log.error(msg)
         notifier.send("⚠️ 0件検出", msg)
+        return 1
+
+    survived = len(previous.keys() & {l.key for l in listings})
+    if len(previous) >= CHURN_MIN_SAMPLE and survived < len(previous) * CHURN_SURVIVAL_MIN:
+        msg = (
+            f"前回の {len(previous)} 件のうち {survived} 件しか一致しませんでした。"
+            "掲載が一度に総入れ替わりすることはないため、サイトの構造変更か"
+            "一時的な異常ページの可能性が高いです。"
+            "誤通知を避けるため、通知せず state も更新せずに終了します。"
+        )
+        log.error(msg)
+        notifier.send("⚠️ 構造変化の疑い", msg)
         return 1
 
     if previous and len(listings) <= len(previous) * (1 - COLLAPSE_RATIO):
